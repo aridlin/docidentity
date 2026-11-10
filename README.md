@@ -1,8 +1,8 @@
 # Document Identity and Lineage
 
 Local-first Python UNO extension for LibreOffice on Arch Linux / KDE Plasma.
-ODT, ODS and ODP files carry a random 128-bit `@$` identity, one printable Code 128
-barcode, and ODF custom properties. SQLite stores locations, lineage, observations
+ODT, ODS and ODP files carry a random 128-bit `@$` identity, a printable Code 128
+barcode on every printed page, and ODF custom properties. SQLite stores locations, lineage, observations
 and history. No content backup, version-control system, filesystem watcher,
 keyboard hook, network listener or permanent service is installed.
 
@@ -22,6 +22,9 @@ data are not included in this repository. Build artifacts are generated locally.
 Requirements: LibreOffice with Python UNO, Python >= 3.11, native Qt widgets (`python-pyqt6` on Arch),
 `python-cairo` for the new-PDF helper. SQLite and the barcode PNG generator use
 Python's standard library. PDF verification requires Poppler and `zbar` (also used by the tests).
+The print regression tests also require Ghostscript. Office exports use lossless,
+full-resolution RGB barcodes and PDF/A-1 transparency flattening to avoid indexed
+palettes and image masks that some printer drivers render as solid black blocks.
 
 ```sh
 python -c 'import uno, PyQt6.QtWidgets, cairo'
@@ -32,7 +35,7 @@ python scripts/install.py --global-policy
 Close all LibreOffice windows before installation/upgrade; restart LibreOffice
 fully afterwards. The installer uses user `unopkg`, never root. An already running
 LibreOffice can prevent `unopkg` installation; close it and run the command again.
-The build artifact is `dist/docidentity-0.2.0.oxt`. Alternatively install it with
+The build artifact is `dist/docidentity-0.3.0.oxt`. Alternatively install it with
 LibreOffice Tools > Extensions > Add, and install just the CLI with
 `python scripts/install.py --skip-extension --global-policy`.
 
@@ -52,33 +55,50 @@ section from `~/.codex/AGENTS.md` yourself; unrelated instructions are preserved
 ## Use in LibreOffice
 
 New documents, including Ctrl+N, automatically receive one provisional identity
-and barcode. The registry entry is committed when you first save them as ODF.
+and repeating barcodes. The registry entry is committed when you first save them as ODF.
 Opening existing untracked files still leaves registration under your control.
 
 The **Document Identity** menu offers:
 
 1. **Register Document**: add barcode and custom properties; save a named ODF file
    to commit. New untitled documents remain provisional until saved as ODF.
-2. **Document Information**: current/provisional ID, current path and registry
-   details, including all locations, parents, children, timestamps, events,
-   hashes and warnings.
+2. **Document Information**: opens the native lookup window for a saved identity,
+   with document/folder opening and copy actions, locations, history and lineage.
+   Unsaved identities show a short explanation to save first.
 3. **Reposition Barcode**: enter horizontal/vertical coordinates in millimetres
-   from the page origin. This is the supported manual placement operation and
+   from the page origin (inside the print header for Calc). This operation
    preserves identity. Save afterwards to persist the position.
 4. **Restore Default Barcode Position**: place the managed barcode at its default.
 5. **Repair Barcode**: replace its graphic and remove reserved-name duplicates.
 6. **Reconcile Document Identity**: explicitly keep the embedded identity, or
    allocate a child identity (committed only on save). Cancel changes nothing.
 
-Registration preserves existing text/cells/shapes. Writer reserves a 22 mm top
-margin and uses a page-anchored barcode near the upper-right of page one; this can
-reflow an existing document. Calc places the shape two rows below first-sheet
-used data. Impress tries the bottom-right first, then other vacant corners;
-it refuses registration if no corner is vacant. Nothing replaces user cells or
-user drawings. Review layout after initial registration, especially complex
-Writer headers and custom Calc print ranges. Reposition through the menu when
-needed. Managed object names reserve the `DocIdentity.ManagedBarcode` prefix;
-do not assign this prefix to your own drawings.
+Registration preserves existing text, cells and user drawings. The same ID is
+printed on **every page**, using an adapter suited to each application:
+
+- **Writer:** one paragraph-anchored graphic in each active header variant (including
+  first/left/right variants and follow-on page styles). The headers repeat as
+  pages are added. A 22 mm top margin reserves space above existing header text.
+- **Calc:** one managed background canvas per page style used by the sheets. A
+  repeating print header reserves a barcode band above existing header text, so
+  every printed page includes it even with explicit print ranges. Cell values,
+  formulas and existing header fields are preserved. The barcode is visible in
+  Print Preview/PDF; it is not a floating drawing over the editable cell grid.
+  Existing non-managed header backgrounds are not overwritten; move those
+  backgrounds before registration. Placement coordinates for Calc are measured
+  inside the print header. The header must be at least 110 mm wide.
+- **Impress:** one managed graphic on every slide, with a bottom-right default
+  and a collision-checked fallback corner. New slides are reconciled during
+  editing and before saving, printing or PDF export.
+
+Repeated instances share the document's ID; they are not separate identities.
+Repair removes extra copies within a header/slide without deleting legitimate
+instances on other pages. The `DocIdentity.ManagedBarcode` name prefix is reserved.
+Review layout after initial registration: reserving space can change pagination.
+Old first-page-only layouts migrate in memory when opened, under identity-change
+suppression; save to persist the upgraded layout. **Repair Barcode** also upgrades
+an existing document without creating a new ID. Read-only legacy documents need
+an editable ODF copy before migration.
 
 The first **user modification, including formatting**, allocates one new
 provisional child ID and updates its barcode in memory. Subsequent modifications
@@ -99,6 +119,8 @@ does **not** retain old file contents or promise that an ancestor can be reopene
 Run from source as `python -m docidentity.cli`, or use the installed command:
 
 ```sh
+docidentity                 # open the search window
+docidentity lookup          # same, without a scanned ID
 docidentity register /absolute/path/document.odt
 docidentity register /absolute/path/workbook.ods
 docidentity register /absolute/path/slides.odp
@@ -135,8 +157,8 @@ the same ID and a source-to-PDF relationship. Exporting through LibreOffice's
 stock PDF dialog does include the visible barcode, but does **not** automatically
 register that output path: use `docidentity export` for registered exports, or
 `docidentity register-export SOURCE OUTPUT.pdf` to verify and register an already
-exported PDF without modifying it. Exports are registered only after a rendered
-page contains the matching decodable barcode; excluded print areas fail safely.
+exported PDF without modifying it. Exports are registered only after every rendered
+page contains the matching decodable barcode; a missing barcode on any page fails safely.
 
 `AGENTS.md` applies this project's generation policy locally.
 `docs/GLOBAL-AGENTS-snippet.md` provides the reusable global instruction;
@@ -165,13 +187,22 @@ if barcode.startswith('@$'):
 # Leave the separate @# command protocol with its current handler.
 ```
 
-The lookup validates the entire ID and opens a native Qt window with separate
-locations, history, lineage, hashes and warnings views; it never
-opens a document just because a barcode was scanned. Select a location and use
-**Open selected file** or **Open containing directory** explicitly. All known
-locations are listed, with availability and whether the last observed identity
-at that path is current. Double-click a parent or child in the Lineage tab to navigate. Unknown IDs
-show a clear inline message while keeping the lookup window open.
+The lookup validates the entire ID and opens a native Qt window. A document
+summary and **Open document**, **Open folder**, and **Copy path** actions sit above
+the locations table; history, lineage, hashes and warnings have separate tabs.
+The best available current location is selected automatically. Opening the window
+or scanning a barcode never opens the document itself. Double-click a current
+location to open it, or right-click for open/copy actions. Historical locations
+cannot open a newer document under an old identity; their folder and path remain
+accessible. Missing files have clear explanations. Desktop launch failures are
+shown in a dialog instead of being silently discarded.
+
+**Ctrl+O** opens the selected document, **Ctrl+Shift+O** opens its folder,
+**Ctrl+L** focuses the search, and **F5** refreshes availability. **Copy ID** copies
+the displayed record, even if another search has been typed. Double-click a parent
+or child in Lineage to navigate. Unknown IDs keep the window open with a clear
+message. Run `docidentity` without arguments or launch **Document Identity** from
+the desktop application menu to start an empty search.
 There is no competing global keyboard hook or daemon.
 
 ## Storage, recovery and troubleshooting
@@ -192,9 +223,11 @@ history or locations. Keep registry backups. SQLite corruption is reported;
 it is never silently overwritten. Restore a backup or choose a separate new
 registry (`--database FILE`), then reconcile saved documents.
 
-Hashes use version `odf-v1`: canonical content/styles XML and remaining resources,
+Hashes use version `odf-v2`: canonical content/styles XML and remaining resources,
 excluding metadata, settings, thumbnails, manifest, managed barcode frames,
-their embedded image and styles used exclusively by those frames. It is a
+their embedded images/styles and explicitly owned Calc header background images.
+Observations made by the old `odf-v1` normalizer are retained but are not compared
+against `odf-v2` hashes as though they used the same algorithm. It is a
 conservative structural normalization, not a proof of semantic equivalence.
 LibreOffice may rename generated styles, rewrite formulas or reorder structures
 between releases; these can produce diagnostics for visually unchanged files.
@@ -231,9 +264,10 @@ For `No module named uno`: use Arch's `/usr/bin/python` paired with installed
 LibreOffice; a private venv may lack UNO. For `NoConnectException`: ensure
 LibreOffice starts and the CLI uses the right pipe/executable. Avoid running
 headless tests inside restrictive sandboxes that block LibreOffice IPC.
-For invisible Calc barcode: check print ranges; a custom range may exclude the
-area below used cells. Enlarge the print range or reposition within a free
-printed area before export. Verify the exported PDF before printing.
+For Calc barcodes: use Print Preview to see the repeating header. If registration
+reports a narrow page, enlarge the usable page/header width to at least 110 mm
+or use landscape orientation. Move any existing custom header background before
+registration. Verify the exported PDF before printing.
 
 ## Tests and verification
 
@@ -248,7 +282,7 @@ The test runner launches **actual installed LibreOffice** in a disposable profil
 The OXT test installs the package into another disposable profile and exercises
 its real Python component loader, automatic startup attachment, edit detection
 and save callbacks. It does not rely on mocked UNO objects. Test document
-registries are isolated and disposable. `dist/qa/*.png` are page renders retained
+registries are isolated and disposable. `dist/qa/**/*.png` are page renders retained
 for inspection; all temporary ODF/PDF test files are removed afterwards.
 Tests decode the exact `@$` payload using zbar from rendered PDF pages for all
 three applications. This verifies rendering and machine decoding, not a physical

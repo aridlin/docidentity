@@ -20,6 +20,7 @@ a=p.parse_args()
 office_env=dict(os.environ,SAL_USE_VCLPLUGIN='svp');office_env.pop('DISPLAY',None)
 base=Path(os.environ.get('XDG_DATA_HOME',Path.home()/'.local/share'))/'docidentity'
 binpath=Path.home()/'.local/bin/docidentity'
+desktop=base.parent/'applications/docidentity.desktop'
 if a.remove:
     manifest=base/'scanner-integration.json'
     if manifest.exists():
@@ -31,6 +32,7 @@ if a.remove:
         manifest.unlink();print('Restored scanner handler backup; existing scanner service retained.')
     if not a.skip_extension: subprocess.run(['/usr/bin/unopkg','remove','org.aridlin.docidentity'],env=office_env,check=True)
     if binpath.exists(): binpath.unlink()
+    if desktop.exists(): desktop.unlink()
     shutil.rmtree(base/'app',ignore_errors=True)
     print('Removed application. Registry and global document policy retained.')
 else:
@@ -42,9 +44,14 @@ else:
     launcher='#!/bin/sh\nPYTHONPATH='+shlex.quote(str(base/'app'))+'${PYTHONPATH:+:$PYTHONPATH} exec /usr/bin/python -m docidentity.cli "$@"\n'
     if binpath.exists() and binpath.read_text()!=launcher and 'docidentity.cli' not in binpath.read_text(): raise RuntimeError('Refusing to replace unrelated executable')
     binpath.write_text(launcher);binpath.chmod(0o755)
+    desktop.parent.mkdir(parents=True,exist_ok=True)
+    desktop.write_text('[Desktop Entry]\nType=Application\nName=Document Identity\n'
+        'Comment=Find registered documents and open their folders\n'
+        'Exec="'+str(binpath).replace('\\','\\\\').replace('"','\\"')+'" lookup\n'
+        'Icon=document-properties\nTerminal=false\nCategories=Office;\n')
     if not a.skip_extension:
         subprocess.run([sys.executable,str(root/'scripts/build.py')],check=True)
-        subprocess.run(['/usr/bin/unopkg','add','--force',str(root/'dist/docidentity-0.2.0.oxt')],env=office_env,check=True)
+        subprocess.run(['/usr/bin/unopkg','add','--force',str(root/'dist/docidentity-0.3.0.oxt')],env=office_env,check=True)
     if a.global_policy:
         target=Path(os.environ.get('CODEX_HOME',Path.home()/'.codex'))/'AGENTS.md'
         target.parent.mkdir(parents=True,exist_ok=True)

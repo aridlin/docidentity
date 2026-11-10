@@ -8,7 +8,7 @@ import unohelper
 from com.sun.star.task import XJob, XJobExecutor
 from com.sun.star.document import XDocumentEventListener
 from docidentity.core import Registry, data_home
-from docidentity.office import Controller, metadata
+from docidentity.office import Controller, metadata, kind
 
 IMPL='org.aridlin.docidentity.Job'
 CONTROLLERS=[]
@@ -83,12 +83,13 @@ class Job(unohelper.Base,XJob,XJobExecutor):
                     if c.error: raise RuntimeError(c.error)
                     message(doc,'Registered: '+c.session.current)
             elif command=='info':
-                import json
                 if not c.session.current: raise ValueError('Register the document first')
-                provisional='Provisional (not yet saved)\n' if c.session.provisional else ''
-                try: details=json.dumps(c.registry.info(c.session.current),indent=2)
-                except KeyError: details='No registry entry until saved.'
-                message(doc,provisional+c.session.current+'\n'+doc.URL+'\n'+details)
+                if c.session.provisional:
+                    message(doc,'Unsaved document identity: '+c.session.current+
+                        '\n\nSave this document as ODT, ODS or ODP to record its location and enable document lookup.')
+                else:
+                    from docidentity.desktop import launch_lookup
+                    launch_lookup(c.session.current,c.registry.path)
             elif command=='restore': c.repair(True)
             elif command=='repair': c.repair()
             elif command=='reposition':
@@ -96,7 +97,8 @@ class Job(unohelper.Base,XJob,XJobExecutor):
                 # Accessible UNO dialog with millimetre coordinates; controlled edits.
                 sm=self.ctx.ServiceManager
                 model=sm.createInstanceWithContext('com.sun.star.awt.UnoControlDialogModel',self.ctx)
-                model.Width=180; model.Height=100; model.Title='Barcode position (mm from page origin)'
+                model.Width=180; model.Height=100
+                model.Title='Barcode position (mm inside print header)' if kind(doc)=='calc' else 'Barcode position (mm from page origin)'
                 for name,y,label in [('x',12,'Horizontal (mm)'),('y',40,'Vertical (mm)')]:
                     t=model.createInstance('com.sun.star.awt.UnoControlFixedTextModel'); t.PositionX=6;t.PositionY=y;t.Width=90;t.Height=14;t.Label=label;model.insertByName(name+'label',t)
                     field=model.createInstance('com.sun.star.awt.UnoControlNumericFieldModel');field.PositionX=105;field.PositionY=y;field.Width=65;field.Height=15;field.Value=10;field.ValueMin=0;field.ValueMax=1000;field.DecimalAccuracy=1;model.insertByName(name,field)

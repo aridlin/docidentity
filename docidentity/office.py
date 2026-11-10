@@ -44,12 +44,8 @@ def kind(doc):
     raise ValueError('Only Writer ODT, Calc ODS and Impress ODP are supported')
 
 def shapes(doc):
-    k=kind(doc)
-    if k=='writer':
-        graphics=doc.GraphicObjects
-        return [graphics.getByName(name) for name in graphics.ElementNames if graphics.getByName(name).Name.startswith(MANAGED)]
-    pages=doc.DrawPages
-    return [p.getByIndex(i) for n in range(pages.Count) for p in [pages.getByIndex(n)] for i in range(p.Count) if p.getByIndex(i).Name.startswith(MANAGED)]
+    from .repeated import managed_objects
+    return managed_objects(doc)
 
 def graphic(ctx, identity):
     # Pass owned bytes, not a short-lived URL: GraphicProvider may defer decoding.
@@ -58,81 +54,9 @@ def graphic(ctx, identity):
     provider=ctx.ServiceManager.createInstanceWithContext('com.sun.star.graphic.GraphicProvider',ctx)
     return provider.queryGraphic((prop('InputStream',stream),prop('MimeType','image/png'),prop('LazyRead',False)))
 
-def default_position(doc, obj):
-    k=kind(doc)
-    width,height=11000,1400  # ~0.267 mm modules, 14 mm bars, 10-module quiet zones
-    # Set dimensions before the final position: drawing resize may reset origin.
-    if k=='writer': obj.Width=width; obj.Height=height
-    else: obj.setSize(size(width,height))
-    if k=='writer':
-        style=doc.StyleFamilies.getByName('PageStyles').getByName(doc.Text.createTextCursor().PageStyleName or 'Standard')
-        # Reserve a margin band rather than overlay document text.
-        if style.TopMargin < 2200: style.TopMargin=2200
-        obj.HoriOrient=0; obj.VertOrient=0
-        obj.HoriOrientRelation=7; obj.VertOrientRelation=7  # PAGE_FRAME
-        obj.HoriOrientPosition=max(0,style.Width-style.RightMargin-width)
-        obj.VertOrientPosition=400
-    elif k=='calc':
-        sheet=doc.Sheets.getByIndex(0)
-        # Drawing anchors enlarge gotoEndOfUsedArea(), which would move the
-        # barcode farther down on each restore. Query actual cell contents.
-        ranges=sheet.queryContentCells(31).RangeAddresses
-        row=max((r.EndRow for r in ranges),default=-1)+2
-        if row>=sheet.Rows.Count: raise ValueError('No free area below first-sheet data')
-        cell=sheet.getCellByPosition(0,row)
-        obj.Anchor=cell
-        obj.setPosition(point(cell.Position.X,cell.Position.Y))
-    else:
-        page=doc.DrawPages.getByIndex(0)
-        # Find a free corner; refuse overlap if no corner is clear.
-        candidates=[(page.Width-width-500,page.Height-height-500),(500,page.Height-height-500),(page.Width-width-500,500),(500,500)]
-        for x,y in candidates:
-            if x<0 or y<0: continue
-            occupied=False
-            for i in range(page.Count):
-                other=page.getByIndex(i)
-                if other.Name.startswith(MANAGED): continue
-                a,b=other.getPosition(),other.getSize()
-                if x<a.X+b.Width and x+width>a.X and y<a.Y+b.Height and y+height>a.Y:
-                    occupied=True; break
-            if not occupied: obj.setPosition(point(x,y)); break
-        else: raise ValueError('No vacant slide corner for barcode. Move content or create space before registration.')
-
-def barcode(doc,ctx,identity,restore=False):
-    validate(identity)
-    found=shapes(doc)
-    k=kind(doc)
-    fresh=not found
-    if fresh:
-        obj=doc.createInstance('com.sun.star.text.TextGraphicObject' if k=='writer' else 'com.sun.star.drawing.GraphicObjectShape')
-        obj.Name=MANAGED
-        obj.Graphic=graphic(ctx,identity)
-        if k=='writer':
-            obj.AnchorType=uno.Enum('com.sun.star.text.TextContentAnchorType','AT_PAGE')
-            obj.AnchorPageNo=1
-            obj.Surround=uno.Enum('com.sun.star.text.WrapTextMode','THROUGH')
-            doc.Text.insertTextContent(doc.Text.Start,obj,False)
-        else:
-            page=doc.DrawPages.getByIndex(0)
-            page.add(obj)
-        try: default_position(doc,obj)
-        except Exception:
-            if k=='writer': doc.Text.removeTextContent(obj)
-            else: page.remove(obj)
-            raise
-    else:
-        obj=found[0]
-        if restore: default_position(doc,obj)
-        obj.Graphic=graphic(ctx,identity)
-    obj.Description='Document identity '+identity+' (managed Code 128)'
-    # Remove only exact reserved-name duplicates, never unrelated drawings.
-    for extra in found[1:]:
-        if k=='writer': doc.Text.removeTextContent(extra)
-        else:
-            for n in range(doc.DrawPages.Count):
-                page=doc.DrawPages.getByIndex(n)
-                if any(page.getByIndex(i)==extra for i in range(page.Count)): page.remove(extra); break
-    return obj
+def barcode(doc,ctx,identity,restore=False,update=True):
+    from .repeated import ensure
+    return ensure(doc,ctx,identity,restore,update)
 
 class Controller(unohelper.Base,XModifyListener,XDocumentEventListener):
     def __init__(self,doc,ctx,registry=None):
@@ -148,7 +72,8 @@ class Controller(unohelper.Base,XModifyListener,XDocumentEventListener):
         self.error=None
         self.attached=False
         self.saving=False
-        self.rendered_id=self.session.current if len(shapes(doc))==1 else None
+        from .repeated import coverage_complete
+        self.rendered_id=m.get(PREFIX+'BarcodeID',self.session.current) if coverage_complete(doc) else None
 
     def attach(self):
         if not self.attached:
@@ -174,9 +99,8 @@ class Controller(unohelper.Base,XModifyListener,XDocumentEventListener):
             if edge not in self.pending_edges: self.pending_edges.append(edge)
         values={'RecoveryEdges':json.dumps(self.pending_edges,separators=(',',':')),'ID':self.session.current,'Schema':'1','RegisteredURI':self.doc.URL,'Parent':(self.session.committed or '') if self.session.provisional else metadata(self.doc).get(PREFIX+'Parent',''),'Created':metadata(self.doc).get(PREFIX+'Created') or now()}
         set_meta(self.doc,values)
-        if self.rendered_id!=self.session.current or len(shapes(self.doc))!=1:
-            barcode(self.doc,self.ctx,self.session.current)
-            self.rendered_id=self.session.current
+        barcode(self.doc,self.ctx,self.session.current,update=self.rendered_id!=self.session.current)
+        self.rendered_id=self.session.current
 
     def register(self):
         self.writable()
@@ -198,6 +122,13 @@ class Controller(unohelper.Base,XModifyListener,XDocumentEventListener):
             warnings=self.registry.reconcile(self.session.current,self.doc.URL,m.get(PREFIX+'RegisteredURI',''),m.get(PREFIX+'Parent') or None)
             self.registry.recover_edges(self.pending_edges)
             self.pending_edges=[]
+            from .repeated import coverage_complete
+            if metadata(self.doc).get(PREFIX+'PageCoverage')!='all-pages-v1' or self.rendered_id!=self.session.current or not coverage_complete(self.doc):
+                if self.doc.isReadonly():
+                    return warnings+['Read-only document: save an editable copy to upgrade barcodes to every page.']
+                with self.controlled():
+                    barcode(self.doc,self.ctx,self.session.current)
+                    self.rendered_id=self.session.current
             return warnings
         return []
 
@@ -205,7 +136,9 @@ class Controller(unohelper.Base,XModifyListener,XDocumentEventListener):
         if self.session.suppression or self.saving or not self.session.committed: return
         if not self.doc.isModified(): return
         # UNO emits modification events for model edits, not cursor navigation.
-        if self.session.modified():
+        changed=self.session.modified()
+        from .repeated import coverage_complete
+        if changed or not coverage_complete(self.doc):
             try:
                 with self.controlled(): self.sync()
             except Exception as exc:
@@ -224,6 +157,9 @@ class Controller(unohelper.Base,XModifyListener,XDocumentEventListener):
             stored=embedded(path_of(self.doc.URL))
             if stored.get(PREFIX+'ID') != self.session.current:
                 raise RuntimeError('Saved embedded identity does not match in-memory identity; repair and save again')
+            from .repeated import coverage_complete
+            if self.rendered_id!=self.session.current or not coverage_complete(self.doc):
+                raise RuntimeError('Barcode coverage/update did not complete; repair and save again')
             self.registry.recover_edges(self.pending_edges)
             self.session.saved(self.registry,self.doc.URL,self.previous)
             self.pending_edges=[]
@@ -247,6 +183,8 @@ class Controller(unohelper.Base,XModifyListener,XDocumentEventListener):
                 self.after_save()
                 self.saving=False
             elif event.EventName in ('OnSaveFailed','OnSaveAsFailed'): self.saving=False
+            elif event.EventName=='OnPrint' and self.session.current:
+                with self.controlled(): self.sync()
             # Failed/cancelled saves keep the provisional ID for a retry.
         except Exception as exc:
             self.saving=False
@@ -268,9 +206,17 @@ class Controller(unohelper.Base,XModifyListener,XDocumentEventListener):
         with self.controlled():
             obj=self.repair()
             if kind(self.doc)=='writer':
-                obj.HoriOrient=0; obj.VertOrient=0
-                obj.HoriOrientPosition=int(x); obj.VertOrientPosition=int(y)
-            else: obj.setPosition(point(x,y))
+                for item in shapes(self.doc):
+                    item.HoriOrient=0; item.VertOrient=0
+                    item.HoriOrientPosition=int(x); item.VertOrientPosition=int(y)
+            elif kind(self.doc)=='calc':
+                from .repeated import _calc_records,_calc_styles,_apply_calc
+                records=_calc_records(self.doc)
+                for name,style in _calc_styles(self.doc):
+                    records[name]['position']=[int(x),int(y)]
+                    _apply_calc(self.doc,name,style,records,self.session.current,self.ctx,True)
+            else:
+                for item in shapes(self.doc): item.setPosition(point(x,y))
 
     def reconcile_choice(self,fork=False):
         if fork:
@@ -303,7 +249,12 @@ class Office:
         doc=self.open(path)
         try:
             c=Controller(doc,self.ctx,registry)
-            if c.session.current: c.opened(); return c.session.current
+            if c.session.current:
+                c.opened()
+                if doc.isModified():
+                    c.before_save();doc.store();c.after_save()
+                    if c.error:raise RuntimeError(c.error)
+                return c.session.current
             c.register(); c.before_save(); doc.store(); c.after_save()
             if c.error: raise RuntimeError(c.error)
             return c.session.current
@@ -316,15 +267,22 @@ class Office:
             if not c.session.current: raise ValueError('Register source before exporting')
             c.opened()
             managed=shapes(doc)
-            if len(managed)!=1:
-                raise ValueError('Managed barcode is missing or duplicated. Repair and save the source before export.')
+            if not managed:
+                raise ValueError('Managed barcode is missing. Repair and save the source before export.')
             # Regenerate from the validated embedded ID for this export. Some
             # UNO adapters do not persist Description reliably. Source bytes stay intact.
             c.repair()
             dest=path_of(output)
             if dest.exists(): raise FileExistsError(dest)
             filt={'writer':'writer_pdf_Export','calc':'calc_pdf_Export','impress':'impress_pdf_Export'}[kind(doc)]
-            doc.storeToURL(uno.systemPathToFileUrl(str(dest)),(prop('FilterName',filt),prop('Overwrite',False)))
+            # PDF/A-1 flattens transparency; lossless, full-resolution RGB bars
+            # avoid indexed palettes/soft masks that some print drivers turn black.
+            # Use a typed sequence: an untyped Python tuple silently loses FilterData.
+            options=uno.Any('[]com.sun.star.beans.PropertyValue',(
+                prop('SelectPdfVersion',1),prop('UseLosslessCompression',True),
+                prop('ReduceImageResolution',False)))
+            doc.storeToURL(uno.systemPathToFileUrl(str(dest)),(
+                prop('FilterName',filt),prop('Overwrite',False),prop('FilterData',options)))
             from .pdf_support import verify_barcode
             verify_barcode(dest,c.session.current)
             c.registry.commit(c.session.current,dest,event='PDF_EXPORTED',source=c.session.current)

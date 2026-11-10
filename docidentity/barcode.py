@@ -1,5 +1,5 @@
 """Code 128 subset B, ISO/IEC 15417 widths, 10-module quiet zones.
-No fonts, external services or raster scaling needed; output 1200 DPI PNG.
+Opaque RGB PNG avoids palette-dependent barcode rendering in PDF print drivers.
 """
 import struct
 import zlib
@@ -17,8 +17,8 @@ def modules(identity):
 
 def png(identity, scale=12, height=600):
     bits=modules(identity)
-    row=b'\0'+b''.join(bytes([0 if bit else 255])*scale for bit in bits)
+    row=b'\0'+b''.join(bytes([0 if bit else 255])*3*scale for bit in bits)
     width=len(bits)*scale
     def chunk(kind,payload):
         return struct.pack('!I',len(payload))+kind+payload+struct.pack('!I',zlib.crc32(kind+payload)&0xffffffff)
-    return b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('!IIBBBBB',width,height,8,0,0,0,0))+chunk(b'IDAT',zlib.compress(row*height))+chunk(b'IEND',b'')
+    return b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('!IIBBBBB',width,height,8,2,0,0,0))+chunk(b'IDAT',zlib.compress(row*height))+chunk(b'IEND',b'')

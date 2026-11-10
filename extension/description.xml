@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <description xmlns="http://openoffice.org/extensions/description/2006" xmlns:d="http://openoffice.org/extensions/description/2006">
- <identifier value="org.aridlin.docidentity"/><version value="0.2.0"/>
+ <identifier value="org.aridlin.docidentity"/><version value="0.3.0"/>
  <display-name><name lang="en">Document Identity and Lineage</name></display-name>
  <publisher><name lang="en">Local Document Identity Project</name></publisher>
 </description>

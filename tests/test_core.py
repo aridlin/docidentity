@@ -74,6 +74,14 @@ class CoreTests(unittest.TestCase):
     def test_validation_scanner_protocol(self):
         for invalid in ('@#COMMAND','@$', '@$'+'a'*32,'@ $'+'A'*32,'@$'+'A'*32+';xdg-open /'):
             with self.assertRaises(ValueError): validate(invalid)
+    def test_barcode_png_has_explicit_rgb_without_transparency(self):
+        import struct
+        data=png(new_id())
+        width,height,depth,color,_,_,_=struct.unpack('!IIBBBBB',data[16:29])
+        self.assertEqual((8,2),(depth,color),'RGB, not indexed or alpha PNG')
+        self.assertNotIn(b'tRNS',data)
+        self.assertGreater(width,height)
+
     def test_barcode_decode(self):
         import subprocess
         identity=new_id(); f=self.root/'code.png'; f.write_bytes(png(identity))

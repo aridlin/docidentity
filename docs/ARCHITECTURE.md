@@ -6,9 +6,9 @@
   PNG generation with UNO byte-stream import. Complete 34-character payload, modulo-103 checksum, stop pattern,
   ten-module quiet zones. The 110 x 14 mm UNO graphic has approximately 0.256 mm
   modules and high-resolution raster bars. No barcode font dependency.
-- `docidentity/office.py`: Writer page-anchored TextGraphicObject, Calc sheet
-  GraphicObjectShape below used cells, Impress first-page GraphicObjectShape
-  with collision checks. Controller coordinates listeners and suppression.
+- `docidentity/office.py`: Writer page-header TextGraphicObject, Calc repeated print-header
+  background canvas, and an Impress GraphicObjectShape on each slide.
+  `repeated.py` owns per-header/per-style/per-slide coverage and legacy migration. Controller coordinates listeners and suppression.
 - `extension/Identity.py`: Python UNO XJob/XJobExecutor and global document listener,
   startup hooks, automatic new-document registration, accessible menu, position dialog and reconciliation choice.
 - `extension/*.xcu`: startup job registration and the six menu actions.
@@ -51,8 +51,7 @@ model modification; tracking-only placement uses the provided coordinate dialog.
 
 Page anchoring differs between applications; a shared drawing implementation is
 not used for Writer. Writer reserves margin space and can reflow the document;
-existing headers/anchored user shapes still require review. Calc barcode shapes
-below used data may lie outside a user's explicit print range. Impress refuses
+existing headers/anchored user shapes still require review. Calc headers repeat independently of the user's print range; their physical width must fit the barcode. Impress refuses
 to overwrite occupied corners. There is no arbitrary automatic layout engine.
 
 UNO document event listeners cannot atomically veto all storage requests or make
@@ -70,3 +69,16 @@ with the same metadata needs a user's reconciliation decision.
 `integration/scanner_adapter.py` extends the existing target-specific HID parser
 with `@$` dispatch while retaining `@#` commands. It is deployed only with the
 scanner-integration installer option; it does not create another input service.
+
+## Every-page coverage (0.3.0)
+Writer uses repeating header variants for each in-use/following page style.
+Calc uses an AREA-sized grayscale header canvas: physical canvas dimensions
+avoid DPI-dependent image clipping and preserve a separate band for header text.
+Impress reconciles one reserved-name object on each slide; a preflight checks
+vacant corners before adding graphics to a previously unregistered deck.
+Coverage repair/migration runs under identity suppression. Metadata includes
+`PageCoverage=all-pages-v1`, the last successfully rendered `BarcodeID`, and
+`CalcHeaders` layout ownership records. The registry still has one content ID.
+PDF registration now requires decoding that same ID on every exported page.
+The odf-v2 normalizer strips explicitly owned Calc header background images and
+compares observations only within the same algorithm version.

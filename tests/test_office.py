@@ -40,12 +40,49 @@ class OfficeTests(unittest.TestCase):
         elif k=='calc': doc.Sheets.getByIndex(0).getCellByPosition(0,0).String='Changed content'
         else:
             s=doc.createInstance('com.sun.star.drawing.RectangleShape'); doc.DrawPages.getByIndex(0).add(s)
+    def test_barcodes_survive_monochrome_postscript_printing(self):
+        # A PDF viewer alone cannot exercise printer image/color handling.
+        from docidentity.pdf_support import verify_barcode
+        for k in ('writer','calc','impress'):
+            with self.subTest(format=k):
+                doc,path=self.create(k)
+                c=Controller(doc,self.office.ctx,self.registry)
+                identity=c.register()
+                c.before_save();doc.store();c.after_save()
+                self.assertIsNone(c.error)
+                doc.close(True);self.docs.remove(doc)
+                output=self.root/(k+'-print.pdf')
+                self.office.export(path,output,self.registry)
+                self.assertEqual(1,verify_barcode(output,identity))
+                images=subprocess.check_output(['pdfimages','-list',str(output)],text=True)
+                # Fixtures contain no other pictures, so these are barcode images.
+                self.assertNotIn('index',images)
+                self.assertNotIn('smask',images)
+                self.assertNotIn('stencil',images)
+                for line in images.splitlines()[2:]:
+                    self.assertNotIn('jpeg',line.lower())
+                    self.assertNotIn('jpx',line.lower())
+                ps=self.root/(k+'.ps');render=self.root/(k+'-printed.png')
+                subprocess.run(['pdftops','-level2',str(output),str(ps)],check=True,
+                               stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+                subprocess.run(['gs','-q','-dSAFER','-dBATCH','-dNOPAUSE',
+                                '-sDEVICE=pngmono','-r300','-sOutputFile='+str(render),str(ps)],
+                               check=True,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+                decoded=subprocess.check_output(['zbarimg','--quiet','--raw',str(render)],
+                                                stderr=subprocess.DEVNULL,text=True)
+                self.assertEqual([identity],decoded.splitlines())
+
     def test_all_formats_registration_barcode_edit_save_reopen_export(self):
         for k in ('writer','calc','impress'):
             with self.subTest(format=k):
                 doc,path=self.create(k)
                 c=Controller(doc,self.office.ctx,self.registry).attach()
-                a=c.register(); c.before_save(); doc.store(); c.after_save()
+                a=c.register()
+                if k=='impress':
+                    initial=shapes(doc)[0].getPosition()
+                    page=doc.DrawPages.getByIndex(0)
+                    self.assertEqual((page.Width-11500,page.Height-1900),(initial.X,initial.Y))
+                c.before_save(); doc.store(); c.after_save()
                 self.assertIsNone(c.error)
                 self.assertEqual(a,embedded(path)[PREFIX+'ID']); self.assertEqual(1,len(shapes(doc)))
                 before_hash=hashes(path)[0]
@@ -159,14 +196,105 @@ class OfficeTests(unittest.TestCase):
         doc.store()
         self.assertEqual(c.session.current,embedded(path)[PREFIX+'ID'])
 
-    def test_calc_print_range_exclusion_refuses_pdf_registration(self):
+    def test_calc_print_range_keeps_repeating_header_barcode(self):
         doc,path=self.create('calc');c=Controller(doc,self.office.ctx,self.registry).attach()
         c.register();c.before_save();doc.store();c.after_save()
         area=uno.createUnoStruct('com.sun.star.table.CellRangeAddress')
         doc.Sheets.getByIndex(0).setPrintAreas((area,))
         doc.store();identity=c.session.current
         output=self.root/'excluded.pdf'
-        with self.assertRaises(ValueError): self.office.export(path,output,self.registry)
-        self.assertEqual([],self.registry.info(identity)['derivatives'])
+        self.office.export(path,output,self.registry)
+        self.assertEqual(1,len(self.registry.info(identity)['derivatives']))
+
+    def export_all_pages(self,doc,path,c,name):
+        from docidentity.pdf_support import verify_barcode,pdf_info
+        import re
+        doc.store()
+        output=self.root/(name+'.pdf')
+        self.office.export(path,output,self.registry)
+        pages=int(re.search(r'^Pages:\s+(\d+)',pdf_info(output),re.M).group(1))
+        self.assertEqual(pages,verify_barcode(output,c.session.current))
+        qa=Path('dist/qa/all-pages');qa.mkdir(parents=True,exist_ok=True)
+        subprocess.run(['pdftoppm','-f',str(pages),'-l',str(pages),'-singlefile','-scale-to','1800','-png',str(output),str(qa/name)],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+        return pages
+
+    def test_writer_barcode_repeats_on_every_page_and_page_style(self):
+        doc,path=self.create('writer')
+        body='\n'.join('User paragraph '+str(n) for n in range(150))
+        doc.Text.String=body
+        family=doc.StyleFamilies.getByName('PageStyles')
+        doc.Text.createTextCursor().PageDescName='First Page'
+        standard=family.getByName('Standard');standard.HeaderIsOn=True
+        standard.HeaderIsShared=False;standard.FirstIsShared=False
+        standard.HeaderTextRight.String='Keep right header'
+        standard.HeaderTextLeft.String='Keep left header'
+        c=Controller(doc,self.office.ctx,self.registry).attach();identity=c.register();c.before_save();doc.store();c.after_save()
+        self.assertEqual(body,doc.Text.String)
+        self.assertEqual('Keep right header',standard.HeaderTextRight.String)
+        self.assertEqual('Keep left header',standard.HeaderTextLeft.String)
+        c.repair();c.repair();self.assertEqual(identity,c.session.current)
+        pages=self.export_all_pages(doc,path,c,'writer-multiple-styles')
+        self.assertGreaterEqual(pages,3)
+        # Adding pages after the first dirty-session edit still repeats automatically.
+        # Reopen to get a fresh independent model after the exporter closes its own.
+        doc=self.office.open(path);self.docs.append(doc)
+        c=Controller(doc,self.office.ctx,self.registry).attach();c.opened()
+        doc.Text.insertString(doc.Text.End,'\n'+'\n'.join('More user content '+str(n) for n in range(140)),False)
+        child=c.session.current;doc.Text.insertString(doc.Text.End,' final edit',False)
+        self.assertEqual(child,c.session.current)
+        self.assertGreater(self.export_all_pages(doc,path,c,'writer-added-pages'),pages)
+
+    def test_calc_barcode_repeats_across_sheets_and_print_pages(self):
+        doc,path=self.create('calc');doc.Sheets.insertNewByName('Second',1)
+        for index,rows in ((0,145),(1,95)):
+            sheet=doc.Sheets.getByIndex(index)
+            for row in range(rows):sheet.getCellByPosition(0,row).String='Preserved row '+str(row)
+            area=uno.createUnoStruct('com.sun.star.table.CellRangeAddress');area.Sheet=index;area.EndRow=rows-1
+            sheet.setPrintAreas((area,))
+        doc.Sheets.getByIndex(1).PageStyle='Report'
+        styles=doc.StyleFamilies.getByName('PageStyles')
+        for name in ('Default','Report'):
+            style=styles.getByName(name)
+            content=style.RightPageHeaderContent;content.CenterText.String='Preserved header '+name
+            style.RightPageHeaderContent=content
+        c=Controller(doc,self.office.ctx,self.registry).attach();identity=c.register();c.before_save();doc.store();c.after_save()
+        self.assertEqual(2,len(shapes(doc)))
+        self.assertEqual('Preserved row 100',doc.Sheets.getByIndex(0).getCellByPosition(0,100).String)
+        for name in ('Default','Report'):
+            style=styles.getByName(name);content=style.RightPageHeaderContent;text=content.CenterText
+            self.assertEqual('Preserved header '+name,text.getString())
+        before=hashes(path)[0];c.repair();c.repair();doc.store()
+        self.assertEqual(identity,c.session.current);self.assertEqual(before,hashes(path)[0])
+        self.assertGreaterEqual(self.export_all_pages(doc,path,c,'calc-multiple-sheets'),5)
+
+    def test_impress_barcode_on_every_slide_and_new_slides(self):
+        doc,path=self.create('impress')
+        doc.DrawPages.insertNewByIndex(1);doc.DrawPages.insertNewByIndex(2)
+        c=Controller(doc,self.office.ctx,self.registry).attach();identity=c.register();c.before_save();doc.store();c.after_save()
+        self.assertEqual(3,len(shapes(doc)))
+        c.repair();c.repair();self.assertEqual(3,len(shapes(doc)))
+        self.assertEqual(identity,c.session.current)
+        # Two new slides within one dirty session receive the same provisional ID.
+        doc.DrawPages.insertNewByIndex(3);child=c.session.current
+        doc.DrawPages.insertNewByIndex(4)
+        self.assertNotEqual(identity,child);self.assertEqual(child,c.session.current)
+        doc.store();self.assertEqual(5,len(shapes(doc)))
+        self.assertEqual(5,self.export_all_pages(doc,path,c,'impress-five-slides'))
+
+    def test_legacy_first_page_barcode_migrates_without_new_identity(self):
+        from docidentity.office import set_meta
+        from docidentity.core import new_id
+        doc,path=self.create('writer');identity=new_id()
+        obj=doc.createInstance('com.sun.star.text.TextGraphicObject');obj.Name='DocIdentity.ManagedBarcode'
+        obj.Graphic=graphic(self.office.ctx,identity)
+        obj.AnchorType=uno.Enum('com.sun.star.text.TextContentAnchorType','AT_PAGE');obj.AnchorPageNo=1
+        doc.Text.insertTextContent(doc.Text.Start,obj,False)
+        set_meta(doc,{'ID':identity,'Schema':'1'});doc.store();self.registry.commit(identity,path)
+        c=Controller(doc,self.office.ctx,self.registry).attach();c.opened()
+        self.assertEqual(identity,c.session.current);self.assertIsNone(c.session.provisional)
+        self.assertTrue(all(item.Anchor.Text!=doc.Text for item in shapes(doc)))
+        doc.store();self.assertEqual(identity,embedded(path)[PREFIX+'ID'])
+        self.assertEqual([],self.registry.info(identity)['parents'])
+
 
 if __name__=='__main__': unittest.main()

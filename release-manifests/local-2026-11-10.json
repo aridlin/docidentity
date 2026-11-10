@@ -1,0 +1,26 @@
+{
+  "snapshot": "2026-11-10",
+  "project": "docidentity",
+  "status": "prerelease local-work snapshot",
+  "artifacts": [
+    {
+      "path": "dist/docidentity-0.3.0.oxt",
+      "size": 27367,
+      "sha256": "f171d9e9f7f507dc93c483755a347e8b02c7d71079770f2085ba35b9dbb70409"
+    }
+  ],
+  "checks": [
+    {
+      "job": "docidentity",
+      "passed": true,
+      "command": "python scripts/build.py && python -m unittest discover -s tests -p \"test_core.py\" -v && python -m unittest discover -s tests -p \"test_desktop.py\" -v"
+    },
+    {
+      "job": "docidentity-earlier",
+      "passed": true,
+      "command": ""
+    }
+  ],
+  "notes": [],
+  "runtime": "Linux x86_64 dynamic system libraries for ELF binaries; .exe cross-compiled Windows x64; APK preview/debug; OXT platform independent. Source/API compatibility and hardware behavior are not implied by compilation."
+}

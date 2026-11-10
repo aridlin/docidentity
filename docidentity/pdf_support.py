@@ -19,8 +19,9 @@ def verify_barcode(path,identity,first_page_only=False):
         for page in range(1,(1 if first_page_only else int(pages.group(1)))+1):
             subprocess.run(['pdftoppm','-f',str(page),'-l',str(page),'-singlefile','-scale-to','2500','-png',str(path),str(out)],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
             scan=subprocess.run(['zbarimg','--quiet','--raw',str(out)+'.png'],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True)
-            if identity in scan.stdout.splitlines(): return page
-    raise ValueError('PDF has no decodable matching visible barcode. Check print ranges and barcode position. Output remains unregistered.')
+            if identity not in scan.stdout.splitlines():
+                raise ValueError(f'PDF page {page} has no decodable matching visible barcode. Output remains unregistered.')
+    return 1 if first_page_only else int(pages.group(1))
 
 def register_export(source,output,registry):
     m=embedded(path_of(source));identity=validate(m[PREFIX+'ID'])
