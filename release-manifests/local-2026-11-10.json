@@ -1,0 +1,23 @@
+{
+  "snapshot": "2026-11-10",
+  "project": "docidentity-earlier",
+  "status": "prerelease local-work snapshot",
+  "artifacts": [
+    {
+      "path": "dist/docidentity-0.3.0.oxt",
+      "size": 27138,
+      "sha256": "1df43db8a804bbdde55c60f6a45dbd3fe6b0cc2b4c91c717ba0fab2ed786a11f"
+    }
+  ],
+  "checks": [
+    {
+      "job": "docidentity-earlier",
+      "passed": true,
+      "command": ""
+    }
+  ],
+  "notes": [
+    "Rebuilt OXT and source archive; core (14) and desktop (1) unit tests passed."
+  ],
+  "runtime": "Linux x86_64 dynamic system libraries for ELF binaries; .exe cross-compiled Windows x64; APK preview/debug; OXT platform independent. Source/API compatibility and hardware behavior are not implied by compilation."
+}

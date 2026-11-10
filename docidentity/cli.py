@@ -44,7 +44,7 @@ def register_generated_pdf(path,registry):
     creator=re.search(r'^Creator:\s+docidentity\s*$',info,re.M)
     if not subject or not creator: raise ValueError('Only PDFs created by docidentity can be registered with this recovery command')
     identity=validate(subject.group(1))
-    verify_barcode(dest,identity,first_page_only=True)
+    verify_barcode(dest,identity)
     registry.commit(identity,dest)
     return identity
 
@@ -52,9 +52,9 @@ def main(argv=None):
     p=argparse.ArgumentParser(description='Local document identity and barcode tools')
     p.add_argument('--database',type=Path)
     p.add_argument('--pipe',help='Connect to an explicitly launched local UNO pipe instead of starting a one-shot process')
-    sub=p.add_subparsers(dest='command',required=True)
+    sub=p.add_subparsers(dest='command')
     for command in ('lookup','info'):
-        s=sub.add_parser(command); s.add_argument('identity')
+        s=sub.add_parser(command); s.add_argument('identity',**({'nargs':'?','default':''} if command=='lookup' else {}))
     s=sub.add_parser('register'); s.add_argument('file')
     s=sub.add_parser('register-pdf'); s.add_argument('file')
     s=sub.add_parser('export'); s.add_argument('file'); s.add_argument('output')
@@ -67,9 +67,10 @@ def main(argv=None):
     try:
         registry=Registry(args.database)
         try:
-            if args.command=='lookup':
+            if args.command in (None,'lookup'):
                 from .gui import show
-                show(registry,validate(args.identity))
+                identity=getattr(args,'identity','')
+                show(registry,validate(identity) if identity else '')
             elif args.command=='info': print(json.dumps(registry.info(args.identity),indent=2))
             elif args.command=='pdf': print(make_pdf(args.output,args.text,registry))
             elif args.command=='register-export':

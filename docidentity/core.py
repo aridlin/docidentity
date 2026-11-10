@@ -13,6 +13,7 @@ from functools import wraps
 import xml.etree.ElementTree as ET
 import zipfile
 
+HASH_ALGORITHM='odf-v2'
 PREFIX = 'DocIdentity.'
 MANAGED = 'DocIdentity.ManagedBarcode'
 ID_RE = re.compile(r'^@\$[0-9A-F]{32}$')
@@ -53,7 +54,7 @@ def embedded(path):
     return {x.attrib.get('{%s}name'%NS['meta']): x.text or '' for x in root.iter('{%s}user-defined'%NS['meta']) if x.attrib.get('{%s}name'%NS['meta'],'').startswith(PREFIX)}
 
 def hashes(path):
-    """odf-v1: canonical XML + binary resources; excludes metadata, managed graphic,
+    """odf-v2: canonical XML + binary resources; excludes metadata, managed graphic,
     volatile view settings, thumbnails, manifest. Not semantic equivalence."""
     path = path_of(path)
     raw = hashlib.sha256()
@@ -62,7 +63,7 @@ def hashes(path):
             raw.update(chunk)
     if path.suffix.lower() not in ('.odt','.ods','.odp'):
         return None, raw.hexdigest()
-    h = hashlib.sha256(b'odf-v1\0')
+    h = hashlib.sha256(HASH_ALGORITHM.encode()+b'\0')
     with zipfile.ZipFile(path) as z:
         removed = set()
         trees = {}
@@ -92,6 +93,24 @@ def hashes(path):
                     if not cells or any(c.tag!='{%s}table-cell'%table_ns or len(c) or any(not key.endswith('}number-columns-repeated') for key in c.attrib) or (c.text or '').strip() for c in cells): break
                     table.remove(row)
             trees[name] = root
+        # Calc owns a repeating page-style header image rather than a draw:frame.
+        # Strip only explicitly owned background images, preserving header text.
+        tracking=embedded(path)
+        owned=json.loads(tracking.get(PREFIX+'CalcHeaders') or '{}')
+        style_tag='{%s}'%NS['style']
+        layouts=set()
+        for root in trees.values():
+            for master in root.iter(style_tag+'master-page'):
+                if master.attrib.get(style_tag+'name') in owned or master.attrib.get(style_tag+'display-name') in owned:
+                    layouts.add(master.attrib.get(style_tag+'page-layout-name'))
+        for root in trees.values():
+            for layout in root.iter(style_tag+'page-layout'):
+                if layout.attrib.get(style_tag+'name') not in layouts:continue
+                for header in layout.iter(style_tag+'header-style'):
+                    for parent in header.iter():
+                        for child in list(parent):
+                            if child.tag==style_tag+'background-image':
+                                removed.add(child.attrib.get(XLINK,'').lstrip('./'));parent.remove(child)
         for root in trees.values():
             for node in root.iter():
                 for attr,value in node.attrib.items():
@@ -175,7 +194,7 @@ class Registry:
             if event in ('REGISTERED','MODIFIED','IDENTITY_RECONCILED'):
                 self.db.execute('UPDATE identities SET modified=? WHERE id=?',(timestamp,identity))
             self.db.execute('INSERT INTO instances(identity_id,path,kind,first_seen,last_seen,device,inode) VALUES(?,?,?,?,?,?,?) ON CONFLICT(identity_id,path) DO UPDATE SET last_seen=excluded.last_seen,device=excluded.device,inode=excluded.inode',(identity,str(path),path.suffix.lower(),timestamp,timestamp,stat.st_dev,stat.st_ino))
-            self.db.execute('INSERT INTO observations(identity_id,path,normalized,full_hash,algorithm,created) VALUES(?,?,?,?,?,?)',(identity,str(path),normalized,full,'odf-v1' if normalized else 'sha256',timestamp))
+            self.db.execute('INSERT INTO observations(identity_id,path,normalized,full_hash,algorithm,created) VALUES(?,?,?,?,?,?)',(identity,str(path),normalized,full,HASH_ALGORITHM if normalized else 'sha256',timestamp))
             self.event(identity,event,path,previous,certainty='confirmed' if event in ('REGISTERED','MODIFIED','SAVE_AS','IDENTITY_RECONCILED','PDF_EXPORTED') else 'observed')
             if source:
                 validate(source)
@@ -188,7 +207,7 @@ class Registry:
         path = path_of(path)
         normalized, full = hashes(path)
         known = self.db.execute('SELECT * FROM instances WHERE identity_id=?',(identity,)).fetchall()
-        previous = self.db.execute('SELECT normalized FROM observations WHERE identity_id=? AND normalized IS NOT NULL ORDER BY observation_id DESC LIMIT 1',(identity,)).fetchone()
+        previous = self.db.execute('SELECT normalized FROM observations WHERE identity_id=? AND normalized IS NOT NULL AND algorithm=? ORDER BY observation_id DESC LIMIT 1',(identity,HASH_ALGORITHM)).fetchone()
         existed = self.db.execute('SELECT 1 FROM identities WHERE id=?',(identity,)).fetchone()
         # Recover embedded ancestry after a successful save / failed SQLite commit.
         self.commit(identity,path,parent=parent,event=('OPENED' if any(x['path']==str(path) for x in known) else 'PATH_DISCOVERED') if existed else 'REGISTERED')

@@ -14,14 +14,19 @@ subprocess.run([sys.executable,str(root/'scripts/build.py')],check=True)
 with tempfile.TemporaryDirectory(prefix='docidentity-oxt-') as temp:
     t=Path(temp); profile=(t/'profile').as_uri(); pipe='identity_extension_'+str(os.getpid())
     os.environ['DOCIDENTITY_DATA_HOME']=str(t/'data')
-    env=dict(os.environ,DOCIDENTITY_DATA_HOME=str(t/'data'),SAL_USE_VCLPLUGIN='gen')
-    subprocess.run(['/usr/bin/unopkg','-env:UserInstallation='+profile,'add','--force',str(root/'dist/docidentity-0.2.0.oxt')],env=env,check=True)
-    proc=subprocess.Popen(['/usr/bin/soffice','-env:UserInstallation='+profile,'--norestore','--nodefault','--nofirststartwizard','--accept=pipe,name='+pipe+';urp;StarOffice.ServiceManager'],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+    env=dict(os.environ,DOCIDENTITY_DATA_HOME=str(t/'data'),SAL_USE_VCLPLUGIN='svp',QT_QPA_PLATFORM='xcb')
+    subprocess.run(['/usr/bin/unopkg','-env:UserInstallation='+profile,'add','--force',str(root/'dist/docidentity-0.3.0.oxt')],env=env,check=True)
+    proc=subprocess.Popen(['/usr/bin/soffice','-env:UserInstallation='+profile,'--headless','--norestore','--nodefault','--nofirststartwizard','--accept=pipe,name='+pipe+';urp;StarOffice.ServiceManager'],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
     try:
         for _ in range(100):
             try: office=Office(pipe); break
             except Exception: time.sleep(.1)
         else: raise RuntimeError('Office startup failed: '+proc.stderr.read().decode())
+        # Disable the welcome wizard through the live configuration provider;
+        # a fresh profile may reset preseeded settings during its initial setup.
+        provider=office.ctx.ServiceManager.createInstanceWithContext('com.sun.star.configuration.ConfigurationProvider',office.ctx)
+        settings=provider.createInstanceWithArguments('com.sun.star.configuration.ConfigurationUpdateAccess',(prop('nodepath','/org.openoffice.Office.Common/Misc'),))
+        settings.setPropertyValue('FirstRun',False);settings.commitChanges()
         job=office.ctx.ServiceManager.createInstanceWithContext('org.aridlin.docidentity.Job',office.ctx)
         assert job is not None,'Python UNO component not registered'
         for k,factory,extension,filt in [('writer','swriter','odt','writer8'),('calc','scalc','ods','calc8'),('impress','simpress','odp','impress8')]:
@@ -36,6 +41,29 @@ with tempfile.TemporaryDirectory(prefix='docidentity-oxt-') as temp:
             assert a==embedded(path)[PREFIX+'ID']
             registry=Registry(t/'data/registry.sqlite3')
             assert registry.info(a)['parents']==[]
+            if k=='writer':
+                # Exercise the actual OXT menu action: no JSON/modal message box.
+                doc.CurrentController.Frame.activate()
+                job.trigger('info')
+                lookup=None
+                try:
+                    for attempt in range(50):
+                        for cmdline in Path('/proc').glob('[0-9]*/cmdline'):
+                            try: argv=cmdline.read_bytes().split(b'\0')
+                            except (OSError,ProcessLookupError):continue
+                            if b'docidentity.cli' in argv and str(registry.path).encode() in argv and a.encode() in argv:
+                                lookup=int(cmdline.parent.name);break
+                        if lookup:
+                            time.sleep(.4)
+                            os.kill(lookup,0);break
+                        time.sleep(.1)
+                    assert lookup,'Document Information did not launch the native lookup'
+                    print('PASS: saved-document information launches native lookup from bundled OXT',flush=True)
+                finally:
+                    if lookup:
+                        import signal
+                        try:os.kill(lookup,signal.SIGTERM)
+                        except ProcessLookupError:pass
             # The same dispatch used by Ctrl+N must auto-register another new document.
             dispatch=office.ctx.ServiceManager.createInstanceWithContext('com.sun.star.frame.DispatchHelper',office.ctx)
             def components():
